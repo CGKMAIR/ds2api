@@ -17,12 +17,6 @@
       "email": "cgkmair520@gmail.com",
       "password": "AaCGKMAIR520",
       "token": ""
-    },
-    {
-      "_comment": "手机号登录方式（中国大陆）",
-      "mobile": "12345678901",
-      "password": "your-password-3",
-      "token": ""
     }
   ],
   "model_aliases": {
