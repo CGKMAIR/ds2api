@@ -168,7 +168,7 @@ func TestNormalizeOpenAIMessagesForPrompt_AssistantMultipleToolCallsRemainSepara
 	}
 }
 
-func TestNormalizeOpenAIMessagesForPrompt_RepairsConcatenatedToolArguments(t *testing.T) {
+func TestNormalizeOpenAIMessagesForPrompt_PreservesConcatenatedToolArguments(t *testing.T) {
 	raw := []any{
 		map[string]any{
 			"role": "assistant",
@@ -189,10 +189,94 @@ func TestNormalizeOpenAIMessagesForPrompt_RepairsConcatenatedToolArguments(t *te
 		t.Fatalf("expected one normalized message, got %d", len(normalized))
 	}
 	content, _ := normalized[0]["content"].(string)
-	if !strings.Contains(content, `function.arguments: {"query":"测试工具调用"}`) {
-		t.Fatalf("expected repaired arguments in tool history, got %q", content)
+	if !strings.Contains(content, `function.arguments: {}{"query":"测试工具调用"}`) {
+		t.Fatalf("expected original concatenated arguments in tool history, got %q", content)
 	}
-	if strings.Contains(content, `{}{"query":"测试工具调用"}`) {
-		t.Fatalf("expected concatenated JSON to be repaired, got %q", content)
+}
+
+
+func TestNormalizeOpenAIMessagesForPrompt_AssistantToolCallsMissingNameAreDropped(t *testing.T) {
+	raw := []any{
+		map[string]any{
+			"role": "assistant",
+			"tool_calls": []any{
+				map[string]any{
+					"id":   "call_missing_name",
+					"type": "function",
+					"function": map[string]any{
+						"arguments": `{"path":"README.MD"}`,
+					},
+				},
+			},
+		},
+	}
+
+	normalized := normalizeOpenAIMessagesForPrompt(raw, "")
+	if len(normalized) != 0 {
+		t.Fatalf("expected nameless assistant tool_calls to be dropped, got %#v", normalized)
+	}
+}
+
+func TestNormalizeOpenAIMessagesForPrompt_AssistantNilContentDoesNotInjectNullLiteral(t *testing.T) {
+	raw := []any{
+		map[string]any{
+			"role":    "assistant",
+			"content": nil,
+			"tool_calls": []any{
+				map[string]any{
+					"id": "call_screenshot",
+					"function": map[string]any{
+						"name":      "send_file_to_user",
+						"arguments": `{"file_path":"/tmp/a.png"}`,
+					},
+				},
+			},
+		},
+	}
+
+	normalized := normalizeOpenAIMessagesForPrompt(raw, "")
+	if len(normalized) != 1 {
+		t.Fatalf("expected one normalized message, got %d", len(normalized))
+	}
+	content, _ := normalized[0]["content"].(string)
+	if strings.Contains(content, "<｜Assistant｜>null") || strings.HasPrefix(strings.TrimSpace(content), "null") {
+		t.Fatalf("unexpected null literal injected into assistant tool history: %q", content)
+	}
+	if !strings.Contains(content, "function.name: send_file_to_user") {
+		t.Fatalf("expected tool history block preserved, got %q", content)
+	}
+}
+
+func TestNormalizeOpenAIMessagesForPrompt_DeveloperRoleMapsToSystem(t *testing.T) {
+	raw := []any{
+		map[string]any{"role": "developer", "content": "必须先走工具调用"},
+		map[string]any{"role": "user", "content": "你好"},
+	}
+	normalized := normalizeOpenAIMessagesForPrompt(raw, "")
+	if len(normalized) != 2 {
+		t.Fatalf("expected 2 normalized messages, got %d", len(normalized))
+	}
+	if normalized[0]["role"] != "system" {
+		t.Fatalf("expected developer role converted to system, got %#v", normalized[0]["role"])
+	}
+}
+
+func TestNormalizeOpenAIMessagesForPrompt_AssistantArrayContentFallbackWhenTextEmpty(t *testing.T) {
+	raw := []any{
+		map[string]any{
+			"role": "assistant",
+			"content": []any{
+				map[string]any{"type": "text", "text": "", "content": "工具说明文本"},
+			},
+		},
+	}
+
+	normalized := normalizeOpenAIMessagesForPrompt(raw, "")
+	if len(normalized) != 1 {
+		t.Fatalf("expected one normalized message, got %d", len(normalized))
+	}
+	content, _ := normalized[0]["content"].(string)
+	if content != "工具说明文本" {
+		t.Fatalf("expected content fallback text preserved, got %q", content)
 	}
 }

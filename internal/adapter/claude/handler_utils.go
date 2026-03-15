@@ -46,13 +46,12 @@ func buildClaudeToolPrompt(tools []any) string {
 		if !ok {
 			continue
 		}
-		name, _ := m["name"].(string)
-		desc, _ := m["description"].(string)
-		schema, _ := json.Marshal(m["input_schema"])
+		name, desc, schemaObj := extractClaudeToolMeta(m)
+		schema, _ := json.Marshal(schemaObj)
 		parts = append(parts, fmt.Sprintf("Tool: %s\nDescription: %s\nParameters: %s", name, desc, schema))
 	}
 	parts = append(parts,
-		"When you need to use tools, you can call multiple tools in one response. Output ONLY JSON like {\"tool_calls\":[{\"name\":\"tool\",\"input\":{}}]}",
+		"When you need a tool, respond with Claude-native tool use (tool_use) using the provided tool schema. Do not print tool-call JSON in text.",
 		"History markers in conversation: [TOOL_CALL_HISTORY]...[/TOOL_CALL_HISTORY] are your previous tool calls; [TOOL_RESULT_HISTORY]...[/TOOL_RESULT_HISTORY] are runtime tool outputs, not user input.",
 		"After a valid [TOOL_RESULT_HISTORY], continue with final answer instead of repeating the same call unless required fields are still missing.",
 	)
@@ -98,11 +97,41 @@ func extractClaudeToolNames(tools []any) []string {
 		if !ok {
 			continue
 		}
-		if name, ok := m["name"].(string); ok && name != "" {
+		name, _, _ := extractClaudeToolMeta(m)
+		if name != "" {
 			out = append(out, name)
 		}
 	}
 	return out
+}
+
+func extractClaudeToolMeta(m map[string]any) (string, string, any) {
+	name, _ := m["name"].(string)
+	desc, _ := m["description"].(string)
+	schemaObj := m["input_schema"]
+	if schemaObj == nil {
+		schemaObj = m["parameters"]
+	}
+
+	if fn, ok := m["function"].(map[string]any); ok {
+		if strings.TrimSpace(name) == "" {
+			name, _ = fn["name"].(string)
+		}
+		if strings.TrimSpace(desc) == "" {
+			desc, _ = fn["description"].(string)
+		}
+		if schemaObj == nil {
+			if v, ok := fn["input_schema"]; ok {
+				schemaObj = v
+			}
+		}
+		if schemaObj == nil {
+			if v, ok := fn["parameters"]; ok {
+				schemaObj = v
+			}
+		}
+	}
+	return strings.TrimSpace(name), strings.TrimSpace(desc), schemaObj
 }
 
 func toMessageMaps(v any) []map[string]any {

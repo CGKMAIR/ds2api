@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"ds2api/internal/sse"
@@ -67,20 +68,36 @@ func TestGoCompatToolcallFixtures(t *testing.T) {
 		var fixture struct {
 			Text      string   `json:"text"`
 			ToolNames []string `json:"tool_names"`
+			Mode      string   `json:"mode"`
 		}
 		mustLoadJSON(t, fixturePath, &fixture)
 
 		var expected struct {
-			Calls []util.ParsedToolCall `json:"calls"`
+			Calls             []util.ParsedToolCall `json:"calls"`
+			SawToolCallSyntax bool                  `json:"sawToolCallSyntax"`
+			RejectedByPolicy  bool                  `json:"rejectedByPolicy"`
+			RejectedToolNames []string              `json:"rejectedToolNames"`
 		}
 		mustLoadJSON(t, expectedPath, &expected)
 
-		got := util.ParseToolCalls(fixture.Text, fixture.ToolNames)
-		if len(got) == 0 && len(expected.Calls) == 0 {
-			continue
+		var got util.ToolCallParseResult
+		switch strings.ToLower(strings.TrimSpace(fixture.Mode)) {
+		case "standalone":
+			got = util.ParseStandaloneToolCallsDetailed(fixture.Text, fixture.ToolNames)
+		default:
+			got = util.ParseToolCallsDetailed(fixture.Text, fixture.ToolNames)
 		}
-		if !reflect.DeepEqual(got, expected.Calls) {
-			t.Fatalf("toolcall fixture %s mismatch:\n got=%#v\nwant=%#v", name, got, expected.Calls)
+		if got.Calls == nil {
+			got.Calls = []util.ParsedToolCall{}
+		}
+		if got.RejectedToolNames == nil {
+			got.RejectedToolNames = []string{}
+		}
+		if !reflect.DeepEqual(got.Calls, expected.Calls) ||
+			got.SawToolCallSyntax != expected.SawToolCallSyntax ||
+			got.RejectedByPolicy != expected.RejectedByPolicy ||
+			!reflect.DeepEqual(got.RejectedToolNames, expected.RejectedToolNames) {
+			t.Fatalf("toolcall fixture %s mismatch:\n got=%#v\nwant=%#v", name, got, expected)
 		}
 	}
 }

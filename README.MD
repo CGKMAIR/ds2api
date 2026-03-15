@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="webui/public/ds2api-favicon.svg" width="128" height="128" alt="DS2API icon" />
+</p>
+
 # DS2API
 
 [![License](https://img.shields.io/github/license/CJackHwang/ds2api.svg)](LICENSE)
@@ -5,6 +9,8 @@
 ![Forks](https://img.shields.io/github/forks/CJackHwang/ds2api.svg)
 [![Release](https://img.shields.io/github/v/release/CJackHwang/ds2api?display_name=tag)](https://github.com/CJackHwang/ds2api/releases)
 [![Docker](https://img.shields.io/badge/docker-ready-blue.svg)](DEPLOY.md)
+[![Deploy on Zeabur](https://zeabur.com/button.svg)](https://zeabur.com/templates/L4CFHP)
+[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/CJackHwang/ds2api)
 
 语言 / Language: [中文](README.MD) | [English](README.en.md)
 
@@ -100,6 +106,14 @@ flowchart LR
 可通过配置中的 `claude_mapping` 或 `claude_model_mapping` 覆盖映射关系。
 另外，`/anthropic/v1/models` 现已包含 Claude 1.x/2.x/3.x/4.x 历史模型 ID 与常见别名，便于旧客户端直接兼容。
 
+
+#### Claude Code 接入避坑（实测）
+
+- `ANTHROPIC_BASE_URL` 推荐直接指向 DS2API 根地址（例如 `http://127.0.0.1:5001`），Claude Code 会请求 `/v1/messages?beta=true`。
+- `ANTHROPIC_API_KEY` 需要与 `config.json` 中 `keys` 一致；建议同时保留常规 key 与 `sk-ant-*` 形态 key，兼容不同客户端校验习惯。
+- 若系统设置了代理，建议对 DS2API 地址配置 `NO_PROXY=127.0.0.1,localhost,<你的主机IP>`，避免本地回环请求被代理拦截。
+- 如遇“工具调用输出成文本、未执行”问题，请升级到包含 Claude 工具调用多格式解析（JSON/XML/ANTML/invoke）的版本。
+
 ### Gemini 接口
 
 Gemini 适配器将模型名通过 `model_aliases` 或内置规则映射到 DeepSeek 原生模型，支持 `generateContent` 和 `streamGenerateContent` 两种调用方式，并完整支持 Tool Calling（`functionDeclarations` → `functionCall` 输出）。
@@ -161,6 +175,12 @@ docker-compose logs -f
 ```
 
 更新镜像：`docker-compose up -d --build`
+
+#### Zeabur 一键部署（Dockerfile）
+
+1. 点击上方 “Deploy on Zeabur” 按钮，一键部署。
+2. 部署完成后访问 `/admin`，使用 Zeabur 环境变量/模板指引中的 `DS2API_ADMIN_KEY` 登录。
+3. 在管理台导入/编辑配置（会写入并持久化到 `/data/config.json`）。
 
 ### 方式三：Vercel 部署
 

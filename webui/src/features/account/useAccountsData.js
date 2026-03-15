@@ -6,7 +6,7 @@ export function useAccountsData({ apiFetch }) {
 
     const [accounts, setAccounts] = useState([])
     const [page, setPage] = useState(1)
-    const [pageSize] = useState(10)
+    const [pageSize, setPageSize] = useState(10)
     const [totalPages, setTotalPages] = useState(1)
     const [totalAccounts, setTotalAccounts] = useState(0)
     const [loadingAccounts, setLoadingAccounts] = useState(false)
@@ -16,10 +16,14 @@ export function useAccountsData({ apiFetch }) {
         return String(acc.identifier || acc.email || acc.mobile || '').trim()
     }
 
-    const fetchAccounts = async (targetPage = page) => {
+    const [searchQuery, setSearchQuery] = useState('')
+
+    const fetchAccounts = async (targetPage = page, targetPageSize = pageSize, targetQuery = searchQuery) => {
         setLoadingAccounts(true)
         try {
-            const res = await apiFetch(`/admin/accounts?page=${targetPage}&page_size=${pageSize}`)
+            let url = `/admin/accounts?page=${targetPage}&page_size=${targetPageSize}`
+            if (targetQuery.trim()) url += `&q=${encodeURIComponent(targetQuery.trim())}`
+            const res = await apiFetch(url)
             if (res.ok) {
                 const data = await res.json()
                 setAccounts(data.items || [])
@@ -32,6 +36,16 @@ export function useAccountsData({ apiFetch }) {
         } finally {
             setLoadingAccounts(false)
         }
+    }
+
+    const changePageSize = (newSize) => {
+        setPageSize(newSize)
+        fetchAccounts(1, newSize)
+    }
+
+    const handleSearchChange = (query) => {
+        setSearchQuery(query)
+        fetchAccounts(1, pageSize, query)
     }
 
     const fetchQueueStatus = async () => {
@@ -59,10 +73,14 @@ export function useAccountsData({ apiFetch }) {
         setKeysExpanded,
         accounts,
         page,
+        pageSize,
         totalPages,
         totalAccounts,
         loadingAccounts,
         fetchAccounts,
+        changePageSize,
         resolveAccountIdentifier,
+        searchQuery,
+        handleSearchChange,
     }
 }

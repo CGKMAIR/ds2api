@@ -3,10 +3,10 @@ package openai
 import (
 	"encoding/json"
 	"fmt"
-	"io"
 	"strings"
 
 	"ds2api/internal/config"
+	"ds2api/internal/prompt"
 )
 
 func normalizeOpenAIMessagesForPrompt(raw []any, traceID string) []map[string]any {
@@ -34,9 +34,9 @@ func normalizeOpenAIMessagesForPrompt(raw []any, traceID string) []map[string]an
 				"role":    "user",
 				"content": formatToolResultForPrompt(msg),
 			})
-		case "user", "system":
+		case "user", "system", "developer":
 			out = append(out, map[string]any{
-				"role":    role,
+				"role":    normalizeOpenAIRoleForPrompt(role),
 				"content": normalizeOpenAIContentForPrompt(msg["content"]),
 			})
 		default:
@@ -48,7 +48,7 @@ func normalizeOpenAIMessagesForPrompt(raw []any, traceID string) []map[string]an
 				role = "user"
 			}
 			out = append(out, map[string]any{
-				"role":    role,
+				"role":    normalizeOpenAIRoleForPrompt(role),
 				"content": content,
 			})
 		}
@@ -78,7 +78,7 @@ func formatAssistantToolCallsForPrompt(msg map[string]any, traceID string) strin
 				args = normalizeOpenAIArgumentsForPrompt(fn["arguments"])
 			}
 			if name == "" {
-				name = "unknown"
+				continue
 			}
 			if args == "" {
 				args = normalizeOpenAIArgumentsForPrompt(call["arguments"])
@@ -133,32 +133,7 @@ func formatToolResultForPrompt(msg map[string]any) string {
 }
 
 func normalizeOpenAIContentForPrompt(v any) string {
-	switch x := v.(type) {
-	case string:
-		return x
-	case []any:
-		parts := make([]string, 0, len(x))
-		for _, item := range x {
-			m, ok := item.(map[string]any)
-			if !ok {
-				continue
-			}
-			t := strings.ToLower(strings.TrimSpace(asString(m["type"])))
-			if t != "text" && t != "output_text" && t != "input_text" {
-				continue
-			}
-			if text := asString(m["text"]); text != "" {
-				parts = append(parts, text)
-				continue
-			}
-			if text := asString(m["content"]); text != "" {
-				parts = append(parts, text)
-			}
-		}
-		return strings.Join(parts, "\n")
-	default:
-		return marshalToPromptString(v)
-	}
+	return prompt.NormalizeContent(v)
 }
 
 func normalizeOpenAIArgumentsForPrompt(v any) string {
@@ -175,30 +150,11 @@ func normalizeToolArgumentString(raw string) string {
 	if trimmed == "" {
 		return ""
 	}
-	if !looksLikeConcatenatedJSON(trimmed) {
-		return trimmed
+	if looksLikeConcatenatedJSON(trimmed) {
+		// Keep original payload to avoid silent argument rewrites.
+		return raw
 	}
-	dec := json.NewDecoder(strings.NewReader(trimmed))
-	values := make([]any, 0, 2)
-	for {
-		var v any
-		if err := dec.Decode(&v); err != nil {
-			if err == io.EOF {
-				break
-			}
-			return trimmed
-		}
-		values = append(values, v)
-	}
-	if len(values) < 2 {
-		return trimmed
-	}
-	last := values[len(values)-1]
-	b, err := json.Marshal(last)
-	if err != nil || len(b) == 0 {
-		return trimmed
-	}
-	return string(b)
+	return trimmed
 }
 
 func marshalToPromptString(v any) string {
@@ -207,6 +163,14 @@ func marshalToPromptString(v any) string {
 		return strings.TrimSpace(fmt.Sprintf("%v", v))
 	}
 	return string(b)
+}
+
+func normalizeOpenAIRoleForPrompt(role string) string {
+	role = strings.ToLower(strings.TrimSpace(role))
+	if role == "developer" {
+		return "system"
+	}
+	return role
 }
 
 func asString(v any) string {

@@ -125,8 +125,11 @@ func TestBuildClaudeToolPromptSingleTool(t *testing.T) {
 	if !containsStr(prompt, "Search the web") {
 		t.Fatalf("expected description in prompt")
 	}
-	if !containsStr(prompt, "tool_calls") {
-		t.Fatalf("expected tool_calls instruction in prompt")
+	if !containsStr(prompt, "tool_use") {
+		t.Fatalf("expected tool_use instruction in prompt")
+	}
+	if containsStr(prompt, "tool_calls") {
+		t.Fatalf("expected prompt to avoid tool_calls JSON instruction")
 	}
 }
 
@@ -138,6 +141,34 @@ func TestBuildClaudeToolPromptMultipleTools(t *testing.T) {
 	prompt := buildClaudeToolPrompt(tools)
 	if !containsStr(prompt, "tool1") || !containsStr(prompt, "tool2") {
 		t.Fatalf("expected both tools in prompt")
+	}
+}
+
+func TestBuildClaudeToolPromptSupportsOpenAIStyleFunctionTool(t *testing.T) {
+	tools := []any{
+		map[string]any{
+			"type": "function",
+			"function": map[string]any{
+				"name":        "search",
+				"description": "Search via function tool",
+				"parameters": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"q": map[string]any{"type": "string"},
+					},
+				},
+			},
+		},
+	}
+	prompt := buildClaudeToolPrompt(tools)
+	if !containsStr(prompt, "Tool: search") {
+		t.Fatalf("expected OpenAI-style function tool name in prompt, got: %q", prompt)
+	}
+	if !containsStr(prompt, "Search via function tool") {
+		t.Fatalf("expected OpenAI-style function tool description in prompt, got: %q", prompt)
+	}
+	if !containsStr(prompt, "\"q\"") {
+		t.Fatalf("expected parameters schema serialized in prompt, got: %q", prompt)
 	}
 }
 
@@ -234,6 +265,21 @@ func TestExtractClaudeToolNamesNil(t *testing.T) {
 	names := extractClaudeToolNames(nil)
 	if len(names) != 0 {
 		t.Fatalf("expected 0, got %v", names)
+	}
+}
+
+func TestExtractClaudeToolNamesSupportsOpenAIStyleFunctionTool(t *testing.T) {
+	tools := []any{
+		map[string]any{
+			"type": "function",
+			"function": map[string]any{
+				"name": "search",
+			},
+		},
+	}
+	names := extractClaudeToolNames(tools)
+	if len(names) != 1 || names[0] != "search" {
+		t.Fatalf("expected [search], got %v", names)
 	}
 }
 
