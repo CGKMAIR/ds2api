@@ -10,15 +10,27 @@ Doc map: [Index](./README.md) | [Architecture](./ARCHITECTURE.en.md) | [API](../
 
 ## Table of Contents
 
+- [Recommended deployment priority](#recommended-deployment-priority)
 - [Prerequisites](#0-prerequisites)
-- [1. Local Run](#1-local-run)
-- [2. Docker Deployment](#2-docker-deployment)
+- [1. Download Release Binaries](#1-download-release-binaries)
+- [2. Docker / GHCR Deployment](#2-docker--ghcr-deployment)
 - [3. Vercel Deployment](#3-vercel-deployment)
-- [4. Download Release Binaries](#4-download-release-binaries)
+- [4. Local Run from Source](#4-local-run-from-source)
 - [5. Reverse Proxy (Nginx)](#5-reverse-proxy-nginx)
 - [6. Linux systemd Service](#6-linux-systemd-service)
 - [7. Post-Deploy Checks](#7-post-deploy-checks)
 - [8. Pre-Release Local Regression](#8-pre-release-local-regression)
+
+---
+
+## Recommended deployment priority
+
+Recommended order when choosing a deployment method:
+
+1. **Download and run release binaries**: the easiest path for most users because the artifacts are already built.
+2. **Docker / GHCR image deployment**: suitable for containerized, orchestrated, or cloud environments.
+3. **Vercel deployment**: suitable if you already use Vercel and accept its platform constraints.
+4. **Run from source / build locally**: suitable for development, debugging, or when you need to modify the code yourself.
 
 ---
 
@@ -48,70 +60,59 @@ Use `config.json` as the single source of truth:
 
 ---
 
-## 1. Local Run
+## 1. Download Release Binaries
 
-### 1.1 Basic Steps
+Built-in GitHub Actions workflow: `.github/workflows/release-artifacts.yml`
+
+- **Trigger**: only on Release `published` (no build on normal push)
+- **Outputs**: multi-platform binary archives + `sha256sums.txt`
+- **Container publishing**: GHCR only (`ghcr.io/cjackhwang/ds2api`)
+
+| Platform | Architecture | Format |
+| --- | --- | --- |
+| Linux | amd64, arm64, armv7 | `.tar.gz` |
+| macOS | amd64, arm64 | `.tar.gz` |
+| Windows | amd64, arm64 | `.zip` |
+
+Each archive includes:
+
+- `ds2api` executable (`ds2api.exe` on Windows)
+- `static/admin/` (built WebUI assets)
+- `config.example.json`, `.env.example`
+- `README.MD`, `README.en.md`, `LICENSE`
+
+### Usage
 
 ```bash
-# Clone
-git clone https://github.com/CJackHwang/ds2api.git
-cd ds2api
+# 1. Download the archive for your platform
+# 2. Extract
+tar -xzf ds2api_<tag>_linux_amd64.tar.gz
+cd ds2api_<tag>_linux_amd64
 
-# Copy and edit config
+# 3. Configure
 cp config.example.json config.json
-# Open config.json and fill in:
-#   - keys: your API access keys
-#   - accounts: DeepSeek accounts (email or mobile + password)
+# Edit config.json
 
-# Start
-go run ./cmd/ds2api
-```
-
-Default local access URL: `http://127.0.0.1:5001`; the server actually binds to `0.0.0.0:5001` (override with `PORT`).
-
-### 1.2 WebUI Build
-
-On first local startup, if `static/admin/` is missing, DS2API will automatically attempt to build the WebUI (requires Node.js/npm; when dependencies are missing it runs `npm ci` first, then `npm run build -- --outDir static/admin --emptyOutDir`).
-
-Manual build:
-
-```bash
-./scripts/build-webui.sh
-```
-
-Or step by step:
-
-```bash
-cd webui
-npm install
-npm run build
-# Output goes to static/admin/
-```
-
-Control auto-build via environment variable:
-
-```bash
-# Disable auto-build
-DS2API_AUTO_BUILD_WEBUI=false go run ./cmd/ds2api
-
-# Force enable auto-build
-DS2API_AUTO_BUILD_WEBUI=true go run ./cmd/ds2api
-```
-
-### 1.3 Compile to Binary
-
-```bash
-go build -o ds2api ./cmd/ds2api
+# 4. Start
 ./ds2api
 ```
 
+### Maintainer Release Flow
+
+1. Create and publish a GitHub Release (with tag, for example `vX.Y.Z`)
+2. Wait for the `Release Artifacts` workflow to complete
+3. Download the matching archive from Release Assets
+
 ---
 
-## 2. Docker Deployment
+## 2. Docker / GHCR Deployment
 
 ### 2.1 Basic Steps
 
 ```bash
+# Pull prebuilt image
+docker pull ghcr.io/cjackhwang/ds2api:latest
+
 # Copy env template and config file
 cp .env.example .env
 cp config.example.json config.json
@@ -128,7 +129,13 @@ docker-compose up -d
 docker-compose logs -f
 ```
 
-The default `docker-compose.yml` maps host port `6011` to container port `5001`. If you want `5001` exposed directly, set `DS2API_HOST_PORT=5001` (or adjust the `ports` mapping).
+The default `docker-compose.yml` directly uses `ghcr.io/cjackhwang/ds2api:latest` and maps host port `6011` to container port `5001`. If you want `5001` exposed directly, set `DS2API_HOST_PORT=5001` (or adjust the `ports` mapping).
+
+If you want a pinned version instead of `latest`, you can also pull a specific tag directly:
+
+```bash
+docker pull ghcr.io/cjackhwang/ds2api:v3.0.0
+```
 
 ### 2.2 Update
 
@@ -252,12 +259,13 @@ VERCEL_TEAM_ID=team_xxxxxxxxxxxx   # optional for personal accounts
 | `DS2API_ENV_WRITEBACK` | When `DS2API_CONFIG_JSON` is present, auto-write to `DS2API_CONFIG_PATH` and switch to file-backed mode after success (`1/true/yes/on`) | Disabled |
 | `DS2API_VERCEL_INTERNAL_SECRET` | Hybrid streaming internal auth | Falls back to `DS2API_ADMIN_KEY` |
 | `DS2API_VERCEL_STREAM_LEASE_TTL_SECONDS` | Stream lease TTL | `900` |
+| `DS2API_RAW_STREAM_SAMPLE_ROOT` | Raw stream sample root for saving/reading samples | `tests/raw_stream_samples` |
 | `VERCEL_TOKEN` | Vercel sync token | — |
 | `VERCEL_PROJECT_ID` | Vercel project ID | — |
 | `VERCEL_TEAM_ID` | Vercel team ID | — |
 | `DS2API_VERCEL_PROTECTION_BYPASS` | Deployment protection bypass for internal Node→Go calls | — |
 
-### 3.3 Vercel Architecture
+### 3.4 Vercel Architecture
 
 ```text
 Request ──────┐
@@ -293,13 +301,14 @@ Vercel Go Runtime applies platform-level response buffering, so this project use
 
 - `api/chat-stream.js` falls back to Go entry (`?__go=1`) for non-stream requests only
 - Streaming requests (including requests with `tools`) stay on the Node path and use Go-aligned tool-call anti-leak handling
+- The Node stream path also mirrors Go finalization semantics: empty visible output returns the same shaped error SSE, and empty `content_filter` returns a `content_filter` error
 - WebUI non-stream test calls `?__go=1` directly to avoid Node hop timeout on long requests
 
 #### Function Duration
 
 `vercel.json` sets `maxDuration: 300` for both `api/chat-stream.js` and `api/index.go` (subject to your Vercel plan limits).
 
-### 3.4 Vercel Troubleshooting
+### 3.5 Vercel Troubleshooting
 
 #### Go Build Failure
 
@@ -343,64 +352,68 @@ If API responses return Vercel HTML `Authentication Required`:
 - **Option B**: Add `x-vercel-protection-bypass` header to requests
 - **Option C**: Set `VERCEL_AUTOMATION_BYPASS_SECRET` (or `DS2API_VERCEL_PROTECTION_BYPASS`) for internal Node→Go calls
 
-### 3.5 Build Artifacts Not Committed
+### 3.6 Build Artifacts Not Committed
 
 - `static/admin` directory is not in Git
 - Vercel / Docker automatically generate WebUI assets during build
 
 ---
 
-## 4. Download Release Binaries
+## 4. Local Run from Source
 
-Built-in GitHub Actions workflow: `.github/workflows/release-artifacts.yml`
-
-- **Trigger**: only on Release `published` (no build on normal push)
-- **Outputs**: multi-platform binary archives + `sha256sums.txt`
-- **Container publishing**: GHCR only (`ghcr.io/cjackhwang/ds2api`)
-
-| Platform | Architecture | Format |
-| --- | --- | --- |
-| Linux | amd64, arm64 | `.tar.gz` |
-| macOS | amd64, arm64 | `.tar.gz` |
-| Windows | amd64 | `.zip` |
-
-Each archive includes:
-
-- `ds2api` executable (`ds2api.exe` on Windows)
-- `static/admin/` (built WebUI assets)
-- `config.example.json`, `.env.example`
-- `README.MD`, `README.en.md`, `LICENSE`
-
-### Usage
+### 4.1 Basic Steps
 
 ```bash
-# 1. Download the archive for your platform
-# 2. Extract
-tar -xzf ds2api_<tag>_linux_amd64.tar.gz
-cd ds2api_<tag>_linux_amd64
+# Clone
+git clone https://github.com/CJackHwang/ds2api.git
+cd ds2api
 
-# 3. Configure
+# Copy and edit config
 cp config.example.json config.json
-# Edit config.json
+# Open config.json and fill in:
+#   - keys: your API access keys
+#   - accounts: DeepSeek accounts (email or mobile + password)
 
-# 4. Start
-./ds2api
+# Start
+go run ./cmd/ds2api
 ```
 
-### Maintainer Release Flow
+Default local access URL: `http://127.0.0.1:5001`; the server actually binds to `0.0.0.0:5001` (override with `PORT`).
 
-1. Create and publish a GitHub Release (with tag, for example `vX.Y.Z`)
-2. Wait for the `Release Artifacts` workflow to complete
-3. Download the matching archive from Release Assets
+### 4.2 WebUI Build
 
-### Pull from GHCR (Optional)
+On first local startup, if `static/admin/` is missing, DS2API will automatically attempt to build the WebUI (requires Node.js/npm; when dependencies are missing it runs `npm ci` first, then `npm run build -- --outDir static/admin --emptyOutDir`).
+
+Manual build:
 
 ```bash
-# latest
-docker pull ghcr.io/cjackhwang/ds2api:latest
+./scripts/build-webui.sh
+```
 
-# specific version (example)
-docker pull ghcr.io/cjackhwang/ds2api:v3.0.0
+Or step by step:
+
+```bash
+cd webui
+npm install
+npm run build
+# Output goes to static/admin/
+```
+
+Control auto-build via environment variable:
+
+```bash
+# Disable auto-build
+DS2API_AUTO_BUILD_WEBUI=false go run ./cmd/ds2api
+
+# Force enable auto-build
+DS2API_AUTO_BUILD_WEBUI=true go run ./cmd/ds2api
+```
+
+### 4.3 Compile to Binary
+
+```bash
+go build -o ds2api ./cmd/ds2api
+./ds2api
 ```
 
 ---
@@ -525,7 +538,7 @@ curl -s http://127.0.0.1:5001/readyz
 
 # 3. Model list
 curl -s http://127.0.0.1:5001/v1/models
-# Expected: {"object":"list","data":[...]}
+# Expected: {"object":"list","data":[...]} (including `*-nothinking` variants)
 
 # 4. Admin panel (if WebUI is built)
 curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:5001/admin
@@ -535,7 +548,7 @@ curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:5001/admin
 curl http://127.0.0.1:5001/v1/chat/completions \
   -H "Authorization: Bearer your-api-key" \
   -H "Content-Type: application/json" \
-  -d '{"model":"deepseek-chat","messages":[{"role":"user","content":"hello"}]}'
+  -d '{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"hello"}]}'
 ```
 
 ---
@@ -566,4 +579,4 @@ The testsuite automatically performs:
 - ✅ Live scenario verification (OpenAI/Claude/Admin/concurrency/toolcall/streaming)
 - ✅ Full request/response artifact logging for debugging
 
-For detailed testsuite documentation, see [TESTING.md](TESTING.md).
+For detailed testsuite documentation, see [TESTING.md](TESTING.md). The fixed local PR gates are listed in [TESTING.md](TESTING.md#pr-门禁--pr-gates).

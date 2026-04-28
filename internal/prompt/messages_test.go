@@ -32,14 +32,20 @@ func TestMessagesPrepareUsesTurnSuffixes(t *testing.T) {
 		{"role": "assistant", "content": "Answer"},
 	}
 	got := MessagesPrepare(messages)
-	if !strings.Contains(got, "<｜System｜>\nSystem rule<｜end▁of▁instructions｜>") {
+	if !strings.HasPrefix(got, "<｜begin▁of▁sentence｜>") {
+		t.Fatalf("expected begin-of-sentence marker, got %q", got)
+	}
+	if !strings.Contains(got, "<｜System｜>System rule<｜end▁of▁instructions｜>") {
 		t.Fatalf("expected system instructions suffix, got %q", got)
 	}
-	if !strings.Contains(got, "<｜User｜>\nQuestion<｜end▁of▁sentence｜>") {
-		t.Fatalf("expected user sentence suffix, got %q", got)
+	if !strings.Contains(got, "<｜User｜>Question") {
+		t.Fatalf("expected user question, got %q", got)
 	}
-	if !strings.Contains(got, "<｜Assistant｜>\nAnswer<｜end▁of▁sentence｜>") {
+	if !strings.Contains(got, "<｜Assistant｜>Answer<｜end▁of▁sentence｜>") {
 		t.Fatalf("expected assistant sentence suffix, got %q", got)
+	}
+	if strings.Contains(got, "<think>") || strings.Contains(got, "</think>") {
+		t.Fatalf("did not expect think tags in prompt, got %q", got)
 	}
 }
 
@@ -49,5 +55,17 @@ func TestNormalizeContentArrayFallsBackToContentWhenTextEmpty(t *testing.T) {
 	})
 	if got != "from-content" {
 		t.Fatalf("expected fallback to content when text is empty, got %q", got)
+	}
+}
+
+func TestMessagesPrepareWithThinkingPreservesPromptShape(t *testing.T) {
+	messages := []map[string]any{{"role": "user", "content": "Question"}}
+	gotThinking := MessagesPrepareWithThinking(messages, true)
+	gotPlain := MessagesPrepareWithThinking(messages, false)
+	if gotThinking != gotPlain {
+		t.Fatalf("expected thinking flag not to add extra continuity instructions, got thinking=%q plain=%q", gotThinking, gotPlain)
+	}
+	if !strings.HasSuffix(gotThinking, "<｜Assistant｜>") {
+		t.Fatalf("expected assistant suffix, got %q", gotThinking)
 	}
 }

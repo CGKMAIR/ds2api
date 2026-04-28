@@ -10,6 +10,7 @@ import (
 var markdownImagePattern = regexp.MustCompile(`!\[(.*?)\]\((.*?)\)`)
 
 const (
+	beginSentenceMarker   = "<｜begin▁of▁sentence｜>"
 	systemMarker          = "<｜System｜>"
 	userMarker            = "<｜User｜>"
 	assistantMarker       = "<｜Assistant｜>"
@@ -20,6 +21,10 @@ const (
 )
 
 func MessagesPrepare(messages []map[string]any) string {
+	return MessagesPrepareWithThinking(messages, false)
+}
+
+func MessagesPrepareWithThinking(messages []map[string]any, thinkingEnabled bool) string {
 	type block struct {
 		Role string
 		Text string
@@ -41,8 +46,11 @@ func MessagesPrepare(messages []map[string]any) string {
 		}
 		merged = append(merged, msg)
 	}
-	parts := make([]string, 0, len(merged))
+	parts := make([]string, 0, len(merged)+2)
+	parts = append(parts, beginSentenceMarker)
+	lastRole := ""
 	for _, m := range merged {
+		lastRole = m.Role
 		switch m.Role {
 		case "assistant":
 			parts = append(parts, formatRoleBlock(assistantMarker, m.Text, endSentenceMarker))
@@ -55,20 +63,25 @@ func MessagesPrepare(messages []map[string]any) string {
 				parts = append(parts, formatRoleBlock(systemMarker, text, endInstructionsMarker))
 			}
 		case "user":
-			parts = append(parts, formatRoleBlock(userMarker, m.Text, endSentenceMarker))
+			parts = append(parts, formatRoleBlock(userMarker, m.Text, ""))
 		default:
 			if strings.TrimSpace(m.Text) != "" {
 				parts = append(parts, m.Text)
 			}
 		}
 	}
-	out := strings.Join(parts, "\n\n")
+	if lastRole != "assistant" {
+		parts = append(parts, assistantMarker)
+	}
+	out := strings.Join(parts, "")
 	return markdownImagePattern.ReplaceAllString(out, `[${1}](${2})`)
 }
 
-// DeepSeek-style turn suffixes stay attached to the same block as the role content.
+// formatRoleBlock produces a single concatenated block: marker + text + endMarker.
+// No whitespace is inserted between marker and text so role boundaries stay
+// compact and predictable for downstream parsers.
 func formatRoleBlock(marker, text, endMarker string) string {
-	out := marker + "\n" + text
+	out := marker + text
 	if strings.TrimSpace(endMarker) != "" {
 		out += endMarker
 	}
