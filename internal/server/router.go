@@ -22,11 +22,13 @@ import (
 	"ds2api/internal/httpapi/admin"
 	"ds2api/internal/httpapi/claude"
 	"ds2api/internal/httpapi/gemini"
+	"ds2api/internal/httpapi/ollama"
 	"ds2api/internal/httpapi/openai/chat"
 	"ds2api/internal/httpapi/openai/embeddings"
 	"ds2api/internal/httpapi/openai/files"
 	"ds2api/internal/httpapi/openai/responses"
 	"ds2api/internal/httpapi/openai/shared"
+	"ds2api/internal/httpapi/requestbody"
 	"ds2api/internal/webui"
 )
 
@@ -64,9 +66,10 @@ func NewApp() (*App, error) {
 	responsesHandler := &responses.Handler{Store: store, Auth: resolver, DS: dsClient, ChatHistory: chatHistoryStore}
 	filesHandler := &files.Handler{Store: store, Auth: resolver, DS: dsClient, ChatHistory: chatHistoryStore}
 	embeddingsHandler := &embeddings.Handler{Store: store, Auth: resolver, DS: dsClient, ChatHistory: chatHistoryStore}
-	claudeHandler := &claude.Handler{Store: store, Auth: resolver, DS: dsClient, OpenAI: chatHandler}
-	geminiHandler := &gemini.Handler{Store: store, Auth: resolver, DS: dsClient, OpenAI: chatHandler}
+	claudeHandler := &claude.Handler{Store: store, Auth: resolver, DS: dsClient, OpenAI: chatHandler, ChatHistory: chatHistoryStore}
+	geminiHandler := &gemini.Handler{Store: store, Auth: resolver, DS: dsClient, OpenAI: chatHandler, ChatHistory: chatHistoryStore}
 	adminHandler := &admin.Handler{Store: store, Pool: pool, DS: dsClient, OpenAI: chatHandler, ChatHistory: chatHistoryStore}
+	ollamaHandler := &ollama.Handler{Store: store}
 	webuiHandler := webui.NewHandler()
 
 	r := chi.NewRouter()
@@ -75,6 +78,7 @@ func NewApp() (*App, error) {
 	r.Use(filteredLogger())
 	r.Use(middleware.Recoverer)
 	r.Use(cors)
+	r.Use(requestbody.ValidateJSONUTF8)
 	r.Use(timeout(0))
 
 	healthzHandler := func(w http.ResponseWriter, _ *http.Request) {
@@ -97,9 +101,20 @@ func NewApp() (*App, error) {
 	r.Post("/v1/responses", responsesHandler.Responses)
 	r.Get("/v1/responses/{response_id}", responsesHandler.GetResponseByID)
 	r.Post("/v1/files", filesHandler.UploadFile)
+	r.Get("/v1/files/{file_id}", filesHandler.RetrieveFile)
 	r.Post("/v1/embeddings", embeddingsHandler.Embeddings)
+	// Root OpenAI aliases support clients configured with the bare DS2API service URL.
+	r.Get("/models", modelsHandler.ListModels)
+	r.Get("/models/{model_id}", modelsHandler.GetModel)
+	r.Post("/chat/completions", chatHandler.ChatCompletions)
+	r.Post("/responses", responsesHandler.Responses)
+	r.Get("/responses/{response_id}", responsesHandler.GetResponseByID)
+	r.Post("/files", filesHandler.UploadFile)
+	r.Get("/files/{file_id}", filesHandler.RetrieveFile)
+	r.Post("/embeddings", embeddingsHandler.Embeddings)
 	claude.RegisterRoutes(r, claudeHandler)
 	gemini.RegisterRoutes(r, geminiHandler)
+	ollama.RegisterRoutes(r, ollamaHandler)
 	r.Route("/admin", func(ar chi.Router) {
 		admin.RegisterRoutes(ar, adminHandler)
 	})

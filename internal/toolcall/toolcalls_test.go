@@ -6,7 +6,7 @@ import (
 )
 
 func TestFormatOpenAIToolCalls(t *testing.T) {
-	formatted := FormatOpenAIToolCalls([]ParsedToolCall{{Name: "search", Input: map[string]any{"q": "x"}}})
+	formatted := FormatOpenAIToolCalls([]ParsedToolCall{{Name: "search", Input: map[string]any{"q": "x"}}}, nil)
 	if len(formatted) != 1 {
 		t.Fatalf("expected 1, got %d", len(formatted))
 	}
@@ -41,6 +41,91 @@ func TestParseToolCallsSupportsDSMLShell(t *testing.T) {
 	}
 }
 
+func TestParseToolCallsSupportsHyphenatedDSMLShellWithHereDocCDATA(t *testing.T) {
+	text := `<dsml-tool-calls>
+<dsml-invoke name="Bash">
+<dsml-parameter name="command"><![CDATA[git commit -m "$(cat <<'EOF'
+docs: add missing directory entries and package descriptions to architecture docs
+Fill gaps identified in architecture audit: add artifacts/ and static/ to
+directory tree, and document 7 auxiliary internal/ packages (textclean,
+claudeconv, compat, rawsample, devcapture, util, version) in Section 3.
+
+Co-Authored-By: Claude Opus 4.7 noreply@anthropic.com
+EOF
+)"]]></dsml-parameter>
+<dsml-parameter name="description"><![CDATA[Create commit with architecture doc updates]]></dsml-parameter>
+</dsml-invoke>
+</dsml-tool-calls>`
+	calls := ParseToolCalls(text, []string{"Bash"})
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 hyphenated DSML call, got %#v", calls)
+	}
+	if calls[0].Name != "Bash" {
+		t.Fatalf("expected Bash tool, got %#v", calls[0])
+	}
+	command, _ := calls[0].Input["command"].(string)
+	if !strings.Contains(command, `git commit -m "$(cat <<'EOF'`) || !strings.Contains(command, "Co-Authored-By: Claude Opus 4.7") {
+		t.Fatalf("expected here-doc CDATA command to be preserved, got %q", command)
+	}
+	if calls[0].Input["description"] != "Create commit with architecture doc updates" {
+		t.Fatalf("expected description parameter, got %#v", calls[0].Input)
+	}
+}
+
+func TestParseToolCallsIgnoresBareHyphenatedToolCallsLookalike(t *testing.T) {
+	text := `<tool-calls><invoke name="Bash"><parameter name="command">pwd</parameter></invoke></tool-calls>`
+	calls := ParseToolCalls(text, []string{"Bash"})
+	if len(calls) != 0 {
+		t.Fatalf("expected bare hyphenated lookalike to be ignored, got %#v", calls)
+	}
+}
+
+func TestParseToolCallsToleratesDSMLTrailingPipeTagTerminator(t *testing.T) {
+	text := strings.Join([]string{
+		`<|DSML|tool_calls| `,
+		`  <|DSML|invoke name="terminal">`,
+		`    <|DSML|parameter name="command"><![CDATA[find "/home" -type d]]></|DSML|parameter>`,
+		`    <|DSML|parameter name="timeout"><![CDATA[10]]></|DSML|parameter>`,
+		`  </|DSML|invoke>`,
+		`</|DSML|tool_calls>`,
+	}, "\n")
+	calls := ParseToolCalls(text, []string{"terminal"})
+	if len(calls) != 1 {
+		t.Fatalf("expected one trailing-pipe DSML call, got %#v", calls)
+	}
+	if calls[0].Name != "terminal" {
+		t.Fatalf("expected terminal tool, got %#v", calls[0])
+	}
+	if calls[0].Input["command"] != `find "/home" -type d` {
+		t.Fatalf("expected command argument, got %#v", calls[0].Input)
+	}
+	if calls[0].Input["timeout"] != float64(10) {
+		t.Fatalf("expected numeric timeout, got %#v", calls[0].Input)
+	}
+}
+
+func TestParseToolCallsToleratesExtraLeadingLessThanBeforeDSML(t *testing.T) {
+	text := `<<|DSML|tool_calls><<|DSML|invoke name="Bash"><<|DSML|parameter name="command"><![CDATA[pwd]]></|DSML|parameter></|DSML|invoke></|DSML|tool_calls>`
+	calls := ParseToolCalls(text, []string{"Bash"})
+	if len(calls) != 1 {
+		t.Fatalf("expected one extra-leading-less-than DSML call, got %#v", calls)
+	}
+	if calls[0].Name != "Bash" || calls[0].Input["command"] != "pwd" {
+		t.Fatalf("unexpected extra-leading-less-than DSML parse result: %#v", calls[0])
+	}
+}
+
+func TestParseToolCallsToleratesRepeatedDSMLPrefixNoise(t *testing.T) {
+	text := `<<DSML|DSML|tool_calls><<DSML|DSML|invoke name="Bash"><<DSML|DSML|parameter name="command"><![CDATA[git status]]></DSML|DSML|parameter></DSML|DSML|invoke></DSML|DSML|tool_calls>`
+	calls := ParseToolCalls(text, []string{"Bash"})
+	if len(calls) != 1 {
+		t.Fatalf("expected one repeated-prefix DSML call, got %#v", calls)
+	}
+	if calls[0].Name != "Bash" || calls[0].Input["command"] != "git status" {
+		t.Fatalf("unexpected repeated-prefix DSML parse result: %#v", calls[0])
+	}
+}
+
 func TestParseToolCallsSupportsDSMLShellWithCanonicalExampleInCDATA(t *testing.T) {
 	content := `<tool_calls><invoke name="demo"><parameter name="value">x</parameter></invoke></tool_calls>`
 	text := `<|DSML|tool_calls><|DSML|invoke name="Write"><|DSML|parameter name="file_path">notes.md</|DSML|parameter><|DSML|parameter name="content"><![CDATA[` + content + `]]></|DSML|parameter></|DSML|invoke></|DSML|tool_calls>`
@@ -50,6 +135,61 @@ func TestParseToolCallsSupportsDSMLShellWithCanonicalExampleInCDATA(t *testing.T
 	}
 	if calls[0].Name != "Write" || calls[0].Input["content"] != content {
 		t.Fatalf("unexpected DSML CDATA parse result: %#v", calls[0])
+	}
+}
+
+func TestParseToolCallsKeepsHereDocCDATAWithFencedDSMLAndLiteralCDATAEnd(t *testing.T) {
+	command := strings.Join([]string{
+		"cat > docs/project-value.md << 'ENDOFFILE'",
+		"# DS2API project value",
+		"",
+		"```xml",
+		`<|DSML|tool_calls>`,
+		`  <|DSML|invoke name="Bash">`,
+		`    <|DSML|parameter name="command"><![CDATA[grep -E "error|fail" < input.log 2>&1]]></|DSML|parameter>`,
+		`  </|DSML|invoke>`,
+		`</|DSML|tool_calls>`,
+		"```",
+		"",
+		"Only the literal `]]>` needs special handling.",
+		"",
+		"ENDOFFILE",
+		`echo "Done. Lines: $(wc -l < docs/project-value.md)"`,
+	}, "\n")
+	text := `<|DSML|tool_calls><|DSML|invoke name="Bash"><|DSML|parameter name="command"><![CDATA[` + command + `]]></|DSML|parameter><|DSML|parameter name="description"><![CDATA[Write project value doc]]></|DSML|parameter></|DSML|invoke></|DSML|tool_calls>`
+
+	calls := ParseToolCalls(text, []string{"Bash"})
+	if len(calls) != 1 {
+		t.Fatalf("expected one DSML call with extreme heredoc CDATA, got %#v", calls)
+	}
+	got, _ := calls[0].Input["command"].(string)
+	if got != command {
+		t.Fatalf("expected full heredoc command to survive, got:\n%q\nwant:\n%q", got, command)
+	}
+	if calls[0].Input["description"] != "Write project value doc" {
+		t.Fatalf("expected sibling parameter after command, got %#v", calls[0].Input)
+	}
+}
+
+func TestParseToolCallsKeepsCompactCDATAWithImmediateFencedDSML(t *testing.T) {
+	content := strings.Join([]string{
+		"```xml",
+		`<|DSML|tool_calls>`,
+		`  <|DSML|invoke name="Bash">`,
+		`    <|DSML|parameter name="command"><![CDATA[echo compact]]></|DSML|parameter>`,
+		`  </|DSML|invoke>`,
+		`</|DSML|tool_calls>`,
+		"```",
+		"tail",
+	}, "\n")
+	text := `<tool_calls><invoke name="Write"><parameter name="content"><![CDATA[` + content + `]]></parameter></invoke></tool_calls>`
+
+	calls := ParseToolCalls(text, []string{"Write"})
+	if len(calls) != 1 {
+		t.Fatalf("expected one compact CDATA call, got %#v", calls)
+	}
+	if calls[0].Input["content"] != content {
+		t.Fatalf("expected compact CDATA content to survive, got %#v", calls[0].Input["content"])
 	}
 }
 
@@ -248,6 +388,59 @@ func TestParseToolCallsTreatsSingleItemCDATAAsArray(t *testing.T) {
 	}
 }
 
+func TestParseToolCallsTreatsLooseJSONListAsArray(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{
+			name: "plain text",
+			body: `{"content":"Test TodoWrite tool","status":"completed"}, {"content":"Another task","status":"pending"}`,
+		},
+		{
+			name: "cdata",
+			body: `<![CDATA[{"content":"Test TodoWrite tool","status":"completed"}, {"content":"Another task","status":"pending"}]]>`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			text := `<tool_calls><invoke name="TodoWrite"><parameter name="todos">` + tt.body + `</parameter></invoke></tool_calls>`
+			calls := ParseToolCalls(text, []string{"TodoWrite"})
+			if len(calls) != 1 {
+				t.Fatalf("expected one TodoWrite call, got %#v", calls)
+			}
+			items, ok := calls[0].Input["todos"].([]any)
+			if !ok || len(items) != 2 {
+				t.Fatalf("expected loose JSON list to parse as array, got %#v", calls[0].Input["todos"])
+			}
+			first, ok := items[0].(map[string]any)
+			if !ok {
+				t.Fatalf("expected first todo object, got %#v", items[0])
+			}
+			if first["content"] != "Test TodoWrite tool" || first["status"] != "completed" {
+				t.Fatalf("unexpected first todo: %#v", first)
+			}
+		})
+	}
+}
+
+func TestParseToolCallsKeepsPreservedTextParametersAsText(t *testing.T) {
+	text := `<tool_calls><invoke name="Write"><parameter name="content"><![CDATA[{"content":"Test TodoWrite tool","status":"completed"}, {"content":"Another task","status":"pending"}]]></parameter></invoke></tool_calls>`
+	calls := ParseToolCalls(text, []string{"Write"})
+	if len(calls) != 1 {
+		t.Fatalf("expected one Write call, got %#v", calls)
+	}
+	got, ok := calls[0].Input["content"].(string)
+	if !ok {
+		t.Fatalf("expected content to stay a string, got %#v", calls[0].Input["content"])
+	}
+	want := `{"content":"Test TodoWrite tool","status":"completed"}, {"content":"Another task","status":"pending"}`
+	if got != want {
+		t.Fatalf("expected content to stay raw, got %q", got)
+	}
+}
+
 func TestParseToolCallsTreatsCDATAObjectFragmentAsObject(t *testing.T) {
 	payload := `<question><![CDATA[Pick one]]></question><options><item><label><![CDATA[A]]></label></item><item><label><![CDATA[B]]></label></item></options>`
 	text := `<tool_calls><invoke name="AskUserQuestion"><parameter name="questions"><![CDATA[` + payload + `]]></parameter></invoke></tool_calls>`
@@ -320,6 +513,28 @@ func TestParseToolCallsDetailedMarksToolCallsSyntax(t *testing.T) {
 	}
 	if len(res.Calls) != 1 {
 		t.Fatalf("expected one parsed call, got %#v", res)
+	}
+}
+
+func TestParseToolCallsRejectsAllEmptyParameterPayload(t *testing.T) {
+	text := `<tool_calls><invoke name="Bash"><parameter name="command"></parameter><parameter name="description">   </parameter><parameter name="timeout"></parameter></invoke></tool_calls>`
+	res := ParseToolCallsDetailed(text, []string{"Bash"})
+	if !res.SawToolCallSyntax {
+		t.Fatalf("expected tool syntax to be detected, got %#v", res)
+	}
+	if len(res.Calls) != 0 {
+		t.Fatalf("expected all-empty payload to be rejected, got %#v", res.Calls)
+	}
+}
+
+func TestParseToolCallsPreservesExplicitZeroArgToolCall(t *testing.T) {
+	text := `<tool_calls><invoke name="noop"></invoke></tool_calls>`
+	res := ParseToolCallsDetailed(text, []string{"noop"})
+	if len(res.Calls) != 1 {
+		t.Fatalf("expected zero-arg tool call to remain valid, got %#v", res.Calls)
+	}
+	if len(res.Calls[0].Input) != 0 {
+		t.Fatalf("expected empty input map for zero-arg tool call, got %#v", res.Calls[0].Input)
 	}
 }
 
@@ -675,5 +890,141 @@ func TestParseToolCallsSkipsProseMentionOfSameWrapperVariant(t *testing.T) {
 	}
 	if got, _ := res.Calls[0].Input["command"].(string); got != "git status" {
 		t.Fatalf("expected command to parse, got %q", got)
+	}
+}
+
+func TestTurkishILowercaseMapping(t *testing.T) {
+	tests := []struct {
+		name     string
+		text     string
+		start    int
+		wantOk   bool
+		wantName string
+	}{
+		{"turkish_i_at_name_start", "İ<tool>", 0, false, ""},
+		{"turkish_i_at_name_end", "<toolİ>", 0, false, ""},
+		{"turkish_i_before_tag", "İ<tool>", 0, false, ""},
+		{"normal_tool_calls", "<tool_calls>", 0, true, "tool_calls"},
+		{"normal_invoke", "<invoke name=\"test\">", 0, true, "invoke"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := FindToolMarkupTagOutsideIgnored(tt.text, tt.start)
+			if ok != tt.wantOk {
+				t.Errorf("FindToolMarkupTagOutsideIgnored(%q, %d) ok = %v, want %v", tt.text, tt.start, ok, tt.wantOk)
+				return
+			}
+			if ok && got.Name != tt.wantName {
+				t.Errorf("FindToolMarkupTagOutsideIgnored(%q, %d) name = %q, want %q", tt.text, tt.start, got.Name, tt.wantName)
+			}
+		})
+	}
+}
+
+func TestSkipXMLIgnoredSectionBoundaryConditions(t *testing.T) {
+	text := "hello"
+
+	tests := []struct {
+		name     string
+		i        int
+		wantNext int
+		wantAdv  bool
+		wantBlk  bool
+	}{
+		{"valid_index", 2, 2, false, false},
+		{"at_end_equal_len", 5, 5, false, false},
+		{"beyond_end", 6, 6, false, false},
+		{"negative", -1, -1, false, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			next, adv, blk := skipXMLIgnoredSection(text, tt.i)
+			if next != tt.wantNext || adv != tt.wantAdv || blk != tt.wantBlk {
+				t.Errorf("skipXMLIgnoredSection(%q, %d) = (%d, %v, %v), want (%d, %v, %v)",
+					text, tt.i, next, adv, blk, tt.wantNext, tt.wantAdv, tt.wantBlk)
+			}
+		})
+	}
+}
+
+func TestSkipXMLIgnoredSectionCommentWithUnicodeKeepsByteOffset(t *testing.T) {
+	text := "<!-- İ -->x<tool_calls>"
+
+	next, adv, blk := skipXMLIgnoredSection(text, 0)
+	if blk || !adv {
+		t.Fatalf("skipXMLIgnoredSection() = (%d, %v, %v), want advanced unblocked comment", next, adv, blk)
+	}
+	if want := len("<!-- İ -->"); next != want {
+		t.Fatalf("skipXMLIgnoredSection() next = %d, want %d", next, want)
+	}
+}
+
+func TestSkipXMLIgnoredSectionMatchesCDATAWithoutAllocatingTail(t *testing.T) {
+	text := "<![cDaTa[<tool_calls>]]><tool_calls>"
+
+	next, adv, blk := skipXMLIgnoredSection(text, 0)
+	if blk || !adv {
+		t.Fatalf("skipXMLIgnoredSection() = (%d, %v, %v), want advanced unblocked CDATA", next, adv, blk)
+	}
+	if want := len("<![cDaTa[<tool_calls>]]>"); next != want {
+		t.Fatalf("skipXMLIgnoredSection() next = %d, want %d", next, want)
+	}
+
+	tag, ok := FindToolMarkupTagOutsideIgnored(text, 0)
+	if !ok {
+		t.Fatal("expected tool tag after skipped CDATA")
+	}
+	if tag.Start != next {
+		t.Fatalf("FindToolMarkupTagOutsideIgnored() start = %d, want %d", tag.Start, next)
+	}
+}
+
+func TestFindToolCDATAEndBoundaryConditions(t *testing.T) {
+	text := "<![CDATA[hello]]>"
+
+	tests := []struct {
+		name       string
+		from       int
+		wantResult int
+	}{
+		{"valid", 12, 14},
+		{"at_end", 17, -1},
+		{"beyond_end", 18, -1},
+		{"negative", -1, -1},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := findToolCDATAEnd(text, tt.from)
+			if got != tt.wantResult {
+				t.Errorf("findToolCDATAEnd(%q, %d) = %d, want %d",
+					text, tt.from, got, tt.wantResult)
+			}
+		})
+	}
+}
+
+func TestFindMatchingToolMarkupCloseBoundaryConditions(t *testing.T) {
+	tests := []struct {
+		name   string
+		text   string
+		open   ToolMarkupTag
+		wantOk bool
+	}{
+		{"empty_text", "", ToolMarkupTag{Name: "tool_calls", End: 0}, false},
+		{"open_end_beyond_text", "hello", ToolMarkupTag{Name: "tool_calls", End: 100}, false},
+		{"open_end_equals_len", "hello", ToolMarkupTag{Name: "tool_calls", End: 5}, false},
+		{"valid_simple", "<tool_calls></tool_calls>", ToolMarkupTag{Name: "tool_calls", End: 11}, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, ok := FindMatchingToolMarkupClose(tt.text, tt.open)
+			if ok != tt.wantOk {
+				t.Errorf("FindMatchingToolMarkupClose(%q, %+v) ok = %v, want %v", tt.text, tt.open, ok, tt.wantOk)
+			}
+		})
 	}
 }
